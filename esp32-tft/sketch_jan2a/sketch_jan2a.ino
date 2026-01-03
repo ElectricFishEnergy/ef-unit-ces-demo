@@ -1,0 +1,899 @@
+/*  Rui Santos & Sara Santos - Random Nerd Tutorials
+    THIS EXAMPLE WAS TESTED WITH THE FOLLOWING HARDWARE:
+    1) ESP32-2432S028R 2.8 inch 240×320 also known as the Cheap Yellow Display (CYD): https://makeradvisor.com/tools/cyd-cheap-yellow-display-esp32-2432s028r/
+      SET UP INSTRUCTIONS: https://RandomNerdTutorials.com/cyd/
+    2) REGULAR ESP32 Dev Board + 2.8 inch 240x320 TFT Display: https://makeradvisor.com/tools/2-8-inch-ili9341-tft-240x320/ and https://makeradvisor.com/tools/esp32-dev-board-wi-fi-bluetooth/
+      SET UP INSTRUCTIONS: https://RandomNerdTutorials.com/esp32-tft/
+    Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files.
+    The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+*/
+
+#include <SPI.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <WiFiClientSecure.h>
+
+/*  Install the "TFT_eSPI" library by Bodmer to interface with the TFT Display - https://github.com/Bodmer/TFT_eSPI
+    *** IMPORTANT: User_Setup.h available on the internet will probably NOT work with the examples available at Random Nerd Tutorials ***
+    *** YOU MUST USE THE User_Setup.h FILE PROVIDED IN THE LINK BELOW IN ORDER TO USE THE EXAMPLES FROM RANDOM NERD TUTORIALS ***
+    FULL INSTRUCTIONS AVAILABLE ON HOW CONFIGURE THE LIBRARY: https://RandomNerdTutorials.com/cyd/ or https://RandomNerdTutorials.com/esp32-tft/   */
+#include <TFT_eSPI.h>
+
+// Install PNGdec library by Bodmer for PNG image support: https://github.com/Bodmer/PNGdec
+#include <PNGdec.h>
+PNG png;
+
+// Install the "XPT2046_Touchscreen" library by Paul Stoffregen to use the Touchscreen - https://github.com/PaulStoffregen/XPT2046_Touchscreen
+// Note: this library doesn't require further configuration
+#include <XPT2046_Touchscreen.h>
+
+TFT_eSPI tft = TFT_eSPI();
+
+// Touchscreen pins
+#define XPT2046_IRQ 36   // T_IRQ
+#define XPT2046_MOSI 32  // T_DIN
+#define XPT2046_MISO 39  // T_OUT
+#define XPT2046_CLK 25   // T_CLK
+#define XPT2046_CS 33    // T_CS
+
+SPIClass touchscreenSPI = SPIClass(VSPI);
+XPT2046_Touchscreen touchscreen(XPT2046_CS, XPT2046_IRQ);
+
+#define SCREEN_WIDTH 320
+#define SCREEN_HEIGHT 240
+#define FONT_SIZE 2
+
+// WiFi credentials
+const char* ssid = "zoinnelin";
+const char* password = "M@ya2023!";
+
+// GitHub image URL - Update with your repository details
+// Format: https://raw.githubusercontent.com/USERNAME/REPO/BRANCH/path/to/image.png
+const char* imageUrl = "https://raw.githubusercontent.com/neliojunior/ef-unit-ces-demo/main/base_template.png";
+
+// Touchscreen coordinates: (x, y) and pressure (z)
+int x, y, z;
+
+// Browser scroll position
+int scrollY = 0;
+const int LINE_HEIGHT = 16;
+const int MAX_LINES = 13;
+String cachedHTML = "";
+
+// HTML element structure for rendering
+struct HTMLElement {
+  String tag;
+  String text;
+  String style;
+  int fontSize;
+  uint16_t textColor;
+  uint16_t bgColor;
+  bool isLink;
+  String linkUrl;
+  bool isBold;
+  bool isHeading;
+};
+
+HTMLElement displayElements[100];
+int totalElements = 0;
+
+// PNG decoder callback functions
+void *pngOpen(const char *filename, int32_t *size) {
+  // This is called by PNGdec, but we handle the download separately
+  return nullptr;
+}
+
+void pngClose(void *handle) {
+  // Cleanup if needed
+}
+
+int32_t pngRead(PNGFILE *page, uint8_t *buffer, int32_t length) {
+  // Read from our downloaded data
+  HTTPClient *http = (HTTPClient *)page->fHandle;
+  WiFiClient *stream = http->getStreamPtr();
+  
+  if (stream && stream->available()) {
+    return stream->readBytes(buffer, length);
+  }
+  return 0;
+}
+
+int32_t pngSeek(PNGFILE *page, int32_t position) {
+  // For HTTP streams, seeking is not typically supported
+  // We'll need to handle this differently
+  return 0;
+}
+
+// Print Touchscreen info about X, Y and Pressure (Z) on the Serial Monitor
+void printTouchToSerial(int touchX, int touchY, int touchZ) {
+  Serial.print("X = ");
+  Serial.print(touchX);
+  Serial.print(" | Y = ");
+  Serial.print(touchY);
+  Serial.print(" | Pressure = ");
+  Serial.print(touchZ);
+  Serial.println();
+}
+
+// Print Touchscreen info about X, Y and Pressure (Z) on the TFT Display
+void printTouchToDisplay(int touchX, int touchY, int touchZ) {
+  // Clear TFT screen
+  tft.fillScreen(TFT_WHITE);
+  tft.setTextColor(TFT_BLACK, TFT_WHITE);
+
+  int centerX = SCREEN_WIDTH / 2;
+  int textY = 80;
+ 
+  String tempText = "X = " + String(touchX);
+  tft.drawCentreString(tempText, centerX, textY, FONT_SIZE);
+
+  textY += 20;
+  tempText = "Y = " + String(touchY);
+  tft.drawCentreString(tempText, centerX, textY, FONT_SIZE);
+
+  textY += 20;
+  tempText = "Pressure = " + String(touchZ);
+  tft.drawCentreString(tempText, centerX, textY, FONT_SIZE);
+}
+
+// Connect to WiFi
+void connectToWiFi() {
+  tft.fillScreen(TFT_WHITE);
+  tft.setTextColor(TFT_BLACK, TFT_WHITE);
+  tft.drawCentreString("Connecting to WiFi...", SCREEN_WIDTH / 2, 100, FONT_SIZE);
+  
+  Serial.print("Connecting to WiFi: ");
+  Serial.println(ssid);
+  
+  WiFi.begin(ssid, password);
+  
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+    delay(500);
+    Serial.print(".");
+    attempts++;
+  }
+  
+  if (WiFi.status() == WL_CONNECTED) {
+    tft.fillScreen(TFT_WHITE);
+    tft.setTextColor(TFT_GREEN, TFT_WHITE);
+    tft.drawCentreString("WiFi Connected!", SCREEN_WIDTH / 2, 100, FONT_SIZE);
+    tft.setTextColor(TFT_BLACK, TFT_WHITE);
+    tft.drawCentreString("IP: " + WiFi.localIP().toString(), SCREEN_WIDTH / 2, 130, FONT_SIZE);
+    Serial.println();
+    Serial.println("WiFi connected!");
+    Serial.print("IP address: ");
+    Serial.println(WiFi.localIP());
+    delay(2000);
+  } else {
+    tft.fillScreen(TFT_WHITE);
+    tft.setTextColor(TFT_RED, TFT_WHITE);
+    tft.drawCentreString("WiFi Failed!", SCREEN_WIDTH / 2, 100, FONT_SIZE);
+    Serial.println();
+    Serial.println("WiFi connection failed!");
+  }
+}
+
+// Decode HTML entities
+String decodeEntities(String text) {
+  text.replace("&nbsp;", " ");
+  text.replace("&amp;", "&");
+  text.replace("&lt;", "<");
+  text.replace("&gt;", ">");
+  text.replace("&quot;", "\"");
+  text.replace("&#39;", "'");
+  text.replace("&apos;", "'");
+  text.replace("&copy;", "(c)");
+  text.replace("&reg;", "(R)");
+  text.replace("&trade;", "(TM)");
+  return text;
+}
+
+// Extract style attribute value
+String getStyleValue(String style, String property) {
+  int propIndex = style.indexOf(property);
+  if (propIndex == -1) return "";
+  
+  int colonIndex = style.indexOf(":", propIndex);
+  if (colonIndex == -1) return "";
+  
+  int semicolonIndex = style.indexOf(";", colonIndex);
+  int endIndex = (semicolonIndex == -1) ? style.length() : semicolonIndex;
+  
+  String value = style.substring(colonIndex + 1, endIndex);
+  value.trim();
+  return value;
+}
+
+// Convert CSS color to TFT color
+uint16_t parseColor(String colorStr) {
+  colorStr.toLowerCase();
+  colorStr.trim();
+  
+  // Named colors
+  if (colorStr == "black") return TFT_BLACK;
+  if (colorStr == "white") return TFT_WHITE;
+  if (colorStr == "red") return TFT_RED;
+  if (colorStr == "green") return TFT_GREEN;
+  if (colorStr == "blue") return TFT_BLUE;
+  if (colorStr == "yellow") return TFT_YELLOW;
+  if (colorStr == "cyan") return TFT_CYAN;
+  if (colorStr == "magenta") return TFT_MAGENTA;
+  if (colorStr == "orange") return TFT_ORANGE;
+  if (colorStr == "darkgreen") return TFT_DARKGREEN;
+  if (colorStr == "navy") return TFT_NAVY;
+  if (colorStr == "maroon") return TFT_MAROON;
+  if (colorStr == "purple") return TFT_PURPLE;
+  if (colorStr == "olive") return TFT_OLIVE;
+  if (colorStr == "lightgrey") return TFT_LIGHTGREY;
+  if (colorStr == "darkgrey") return TFT_DARKGREY;
+  
+  // Hex colors (#RRGGBB or #RGB)
+  if (colorStr.startsWith("#")) {
+    colorStr = colorStr.substring(1);
+    if (colorStr.length() == 6) {
+      long color = strtol(colorStr.c_str(), NULL, 16);
+      return ((color >> 8) & 0xF8) << 8 | ((color >> 3) & 0xFC) << 3 | (color & 0xF8) >> 3;
+    } else if (colorStr.length() == 3) {
+      // Expand #RGB to #RRGGBB
+      String expanded = "";
+      for (int i = 0; i < 3; i++) {
+        expanded += colorStr.charAt(i);
+        expanded += colorStr.charAt(i);
+      }
+      long color = strtol(expanded.c_str(), NULL, 16);
+      return ((color >> 8) & 0xF8) << 8 | ((color >> 3) & 0xFC) << 3 | (color & 0xF8) >> 3;
+    }
+  }
+  
+  // RGB(r, g, b)
+  if (colorStr.startsWith("rgb")) {
+    int start = colorStr.indexOf("(");
+    int end = colorStr.indexOf(")");
+    if (start != -1 && end != -1) {
+      String rgb = colorStr.substring(start + 1, end);
+      rgb.replace(" ", "");
+      int comma1 = rgb.indexOf(",");
+      int comma2 = rgb.indexOf(",", comma1 + 1);
+      if (comma1 != -1 && comma2 != -1) {
+        int r = rgb.substring(0, comma1).toInt();
+        int g = rgb.substring(comma1 + 1, comma2).toInt();
+        int b = rgb.substring(comma2 + 1).toInt();
+        return tft.color565(r, g, b);
+      }
+    }
+  }
+  
+  return TFT_BLACK; // Default
+}
+
+// Parse font size from CSS
+int parseFontSize(String fontSize) {
+  fontSize.trim();
+  fontSize.toLowerCase();
+  
+  if (fontSize.endsWith("px")) {
+    fontSize = fontSize.substring(0, fontSize.length() - 2);
+    fontSize.trim();
+    int size = fontSize.toInt();
+    if (size <= 12) return 1;
+    if (size <= 18) return 2;
+    return 3;
+  }
+  
+  if (fontSize == "small") return 1;
+  if (fontSize == "medium" || fontSize == "") return 2;
+  if (fontSize == "large") return 2;
+  if (fontSize == "x-large" || fontSize == "xx-large") return 3;
+  
+  return 2; // Default
+}
+
+// Parse HTML and extract elements with styles
+void parseHTML(String html) {
+  totalElements = 0;
+  
+  // Remove scripts and styles
+  while (html.indexOf("<script") != -1) {
+    int start = html.indexOf("<script");
+    int end = html.indexOf("</script>", start);
+    if (end != -1) {
+      html.remove(start, end - start + 9);
+    } else {
+      int tagEnd = html.indexOf(">", start);
+      if (tagEnd != -1) {
+        html.remove(start, tagEnd - start + 1);
+      } else {
+        break;
+      }
+    }
+  }
+  
+  while (html.indexOf("<style") != -1) {
+    int start = html.indexOf("<style");
+    int end = html.indexOf("</style>", start);
+    if (end != -1) {
+      html.remove(start, end - start + 8);
+    } else {
+      int tagEnd = html.indexOf(">", start);
+      if (tagEnd != -1) {
+        html.remove(start, tagEnd - start + 1);
+      } else {
+        break;
+      }
+    }
+  }
+  
+  // Extract body content
+  int bodyStart = html.indexOf("<body");
+  if (bodyStart != -1) {
+    int bodyTagEnd = html.indexOf(">", bodyStart) + 1;
+    int bodyEnd = html.indexOf("</body>", bodyTagEnd);
+    if (bodyEnd != -1) {
+      html = html.substring(bodyTagEnd, bodyEnd);
+    } else {
+      html = html.substring(bodyTagEnd);
+    }
+  }
+  
+  // Parse elements
+  int pos = 0;
+  while (pos < html.length() && totalElements < 100) {
+    // Find next tag
+    int tagStart = html.indexOf("<", pos);
+    if (tagStart == -1) {
+      // No more tags, get remaining text
+      String text = html.substring(pos);
+      text.trim();
+      if (text.length() > 0) {
+        text = decodeEntities(text);
+        // Clean whitespace
+        while (text.indexOf("  ") != -1) text.replace("  ", " ");
+        if (text.length() > 0 && totalElements < 100) {
+          displayElements[totalElements].tag = "text";
+          displayElements[totalElements].text = text;
+          displayElements[totalElements].fontSize = 1;
+          displayElements[totalElements].textColor = TFT_BLACK;
+          displayElements[totalElements].bgColor = TFT_WHITE;
+          displayElements[totalElements].isLink = false;
+          displayElements[totalElements].isBold = false;
+          displayElements[totalElements].isHeading = false;
+          totalElements++;
+        }
+      }
+      break;
+    }
+    
+    // Get text before tag
+    if (tagStart > pos) {
+      String text = html.substring(pos, tagStart);
+      text.trim();
+      if (text.length() > 0) {
+        text = decodeEntities(text);
+        while (text.indexOf("  ") != -1) text.replace("  ", " ");
+        if (text.length() > 0 && totalElements < 100) {
+          displayElements[totalElements].tag = "text";
+          displayElements[totalElements].text = text;
+          displayElements[totalElements].fontSize = 1;
+          displayElements[totalElements].textColor = TFT_BLACK;
+          displayElements[totalElements].bgColor = TFT_WHITE;
+          displayElements[totalElements].isLink = false;
+          displayElements[totalElements].isBold = false;
+          displayElements[totalElements].isHeading = false;
+          totalElements++;
+        }
+      }
+    }
+    
+    // Parse tag
+    int tagEnd = html.indexOf(">", tagStart);
+    if (tagEnd == -1) break;
+    
+    String tag = html.substring(tagStart + 1, tagEnd);
+    tag.toLowerCase();
+    tag.trim();
+    
+    // Skip closing tags
+    if (tag.startsWith("/")) {
+      pos = tagEnd + 1;
+      continue;
+    }
+    
+    // Extract tag name and attributes
+    int spaceIndex = tag.indexOf(" ");
+    String tagName = (spaceIndex == -1) ? tag : tag.substring(0, spaceIndex);
+    
+    // Extract style attribute
+    String style = "";
+    int styleStart = tag.indexOf("style=\"");
+    if (styleStart != -1) {
+      int styleEnd = tag.indexOf("\"", styleStart + 7);
+      if (styleEnd != -1) {
+        style = tag.substring(styleStart + 7, styleEnd);
+      }
+    }
+    
+    // Extract href for links
+    String href = "";
+    bool isLink = (tagName == "a");
+    if (isLink) {
+      int hrefStart = tag.indexOf("href=\"");
+      if (hrefStart != -1) {
+        int hrefEnd = tag.indexOf("\"", hrefStart + 6);
+        if (hrefEnd != -1) {
+          href = tag.substring(hrefStart + 6, hrefEnd);
+        }
+      }
+    }
+    
+    // Find closing tag
+    int contentStart = tagEnd + 1;
+    int contentEnd = html.indexOf("</" + tagName + ">", contentStart);
+    if (contentEnd == -1) {
+      // Self-closing or no closing tag
+      if (tagName == "br" || tagName == "hr") {
+        if (totalElements < 100) {
+          displayElements[totalElements].tag = tagName;
+          displayElements[totalElements].text = "";
+          displayElements[totalElements].fontSize = 1;
+          displayElements[totalElements].textColor = TFT_BLACK;
+          displayElements[totalElements].bgColor = TFT_WHITE;
+          displayElements[totalElements].isLink = false;
+          displayElements[totalElements].isBold = false;
+          displayElements[totalElements].isHeading = false;
+          totalElements++;
+        }
+      }
+      pos = tagEnd + 1;
+      continue;
+    }
+    
+    // Extract content
+    String content = html.substring(contentStart, contentEnd);
+    content.trim();
+    content = decodeEntities(content);
+    while (content.indexOf("  ") != -1) content.replace("  ", " ");
+    
+    if (content.length() > 0 && totalElements < 100) {
+      displayElements[totalElements].tag = tagName;
+      displayElements[totalElements].text = content;
+      displayElements[totalElements].style = style;
+      displayElements[totalElements].isLink = isLink;
+      displayElements[totalElements].linkUrl = href;
+      
+      // Determine font size based on tag
+      if (tagName == "h1") {
+        displayElements[totalElements].fontSize = 3;
+        displayElements[totalElements].isHeading = true;
+        displayElements[totalElements].isBold = true;
+      } else if (tagName == "h2") {
+        displayElements[totalElements].fontSize = 2;
+        displayElements[totalElements].isHeading = true;
+        displayElements[totalElements].isBold = true;
+      } else if (tagName == "h3" || tagName == "h4" || tagName == "h5" || tagName == "h6") {
+        displayElements[totalElements].fontSize = 2;
+        displayElements[totalElements].isHeading = true;
+        displayElements[totalElements].isBold = true;
+      } else {
+        displayElements[totalElements].fontSize = parseFontSize(getStyleValue(style, "font-size"));
+        displayElements[totalElements].isHeading = false;
+      }
+      
+      // Parse colors from style
+      String color = getStyleValue(style, "color");
+      displayElements[totalElements].textColor = (color.length() > 0) ? parseColor(color) : (isLink ? TFT_BLUE : TFT_BLACK);
+      
+      String bgColor = getStyleValue(style, "background-color");
+      displayElements[totalElements].bgColor = (bgColor.length() > 0) ? parseColor(bgColor) : TFT_WHITE;
+      
+      // Check for bold
+      displayElements[totalElements].isBold = (tagName == "b" || tagName == "strong" || 
+                                               style.indexOf("font-weight:bold") != -1 ||
+                                               style.indexOf("font-weight:700") != -1 ||
+                                               displayElements[totalElements].isHeading);
+      
+      totalElements++;
+    }
+    
+    pos = contentEnd + tagName.length() + 3;
+  }
+}
+
+// Render HTML page like a browser
+void renderHTMLPage(String html) {
+  // Clear screen
+  tft.fillScreen(TFT_WHITE);
+  
+  // Draw browser header bar
+  tft.fillRect(0, 0, SCREEN_WIDTH, 25, TFT_DARKGREEN);
+  tft.setTextColor(TFT_WHITE, TFT_DARKGREEN);
+  tft.setTextSize(1);
+  
+  // Extract and display title in header
+  String title = "";
+  int titleStart = html.indexOf("<title>");
+  int titleEnd = html.indexOf("</title>");
+  if (titleStart != -1 && titleEnd != -1) {
+    title = html.substring(titleStart + 7, titleEnd);
+    title = decodeEntities(title);
+  }
+  
+  String urlDisplay = (title.length() > 0) ? title : "google.com";
+  if (urlDisplay.length() > 20) {
+    urlDisplay = urlDisplay.substring(0, 17) + "...";
+  }
+  tft.drawString(urlDisplay, 5, 8, 1);
+  
+  // Parse HTML
+  parseHTML(html);
+  
+  // Render the display
+  renderDisplay();
+}
+
+// Word wrap text to fit screen
+String wrapTextToWidth(String text, int maxWidth, int fontSize) {
+  int charWidth = (fontSize == 1) ? 6 : (fontSize == 2) ? 12 : 18;
+  int maxChars = maxWidth / charWidth;
+  
+  if (text.length() <= maxChars) return text;
+  
+  String result = "";
+  int lastSpace = -1;
+  int lineStart = 0;
+  
+  for (int i = 0; i < text.length(); i++) {
+    if (text.charAt(i) == ' ') {
+      lastSpace = i;
+    }
+    
+    if (i - lineStart >= maxChars) {
+      if (lastSpace > lineStart) {
+        result += text.substring(lineStart, lastSpace) + "\n";
+        lineStart = lastSpace + 1;
+      } else {
+        result += text.substring(lineStart, i) + "\n";
+        lineStart = i;
+      }
+    }
+  }
+  
+  if (lineStart < text.length()) {
+    result += text.substring(lineStart);
+  }
+  
+  return result;
+}
+
+// Render the display with current scroll position
+void renderDisplay() {
+  // Clear content area (keep header)
+  tft.fillRect(0, 25, SCREEN_WIDTH - 5, SCREEN_HEIGHT - 25, TFT_WHITE);
+  
+  // Draw scroll indicator background
+  tft.fillRect(SCREEN_WIDTH - 5, 25, 5, SCREEN_HEIGHT - 25, TFT_LIGHTGREY);
+  
+  int yPos = 30;
+  int elementIndex = 0;
+  int linesRendered = 0;
+  const int maxRenderHeight = SCREEN_HEIGHT - 30;
+  
+  // Render elements with scroll
+  while (elementIndex < totalElements && yPos < SCREEN_HEIGHT - 5 && linesRendered < MAX_LINES * 2) {
+    HTMLElement elem = displayElements[elementIndex];
+    
+    // Skip if scrolled past
+    if (linesRendered < scrollY) {
+      linesRendered++;
+      elementIndex++;
+      continue;
+    }
+    
+    // Check if we've rendered enough
+    if (linesRendered >= scrollY + MAX_LINES) {
+      break;
+    }
+    
+    // Handle different element types
+    if (elem.tag == "br") {
+      yPos += LINE_HEIGHT;
+      linesRendered++;
+    } else if (elem.tag == "hr") {
+      tft.drawLine(5, yPos, SCREEN_WIDTH - 10, yPos, TFT_DARKGREY);
+      yPos += LINE_HEIGHT;
+      linesRendered++;
+    } else if (elem.text.length() > 0) {
+      // Set colors
+      tft.setTextColor(elem.textColor, elem.bgColor);
+      tft.setTextSize(elem.fontSize);
+      
+      // Draw background if needed
+      if (elem.bgColor != TFT_WHITE) {
+        int textHeight = (elem.fontSize == 1) ? 8 : (elem.fontSize == 2) ? 16 : 24;
+        tft.fillRect(5, yPos - 2, SCREEN_WIDTH - 10, textHeight + 4, elem.bgColor);
+      }
+      
+      // Word wrap text
+      int charWidth = (elem.fontSize == 1) ? 6 : (elem.fontSize == 2) ? 12 : 18;
+      int maxChars = (SCREEN_WIDTH - 10) / charWidth;
+      
+      String displayText = elem.text;
+      if (displayText.length() > maxChars) {
+        // Simple truncation for now (could implement proper wrapping)
+        displayText = displayText.substring(0, maxChars - 3) + "...";
+      }
+      
+      // Draw text
+      if (elem.isLink) {
+        // Underline links (draw line below)
+        tft.drawString(displayText, 5, yPos, elem.fontSize);
+        int textWidth = displayText.length() * charWidth;
+        int underlineY = yPos + ((elem.fontSize == 1) ? 8 : (elem.fontSize == 2) ? 16 : 24);
+        tft.drawLine(5, underlineY, 5 + textWidth, underlineY, elem.textColor);
+      } else {
+        tft.drawString(displayText, 5, yPos, elem.fontSize);
+      }
+      
+      // Calculate height based on font size
+      int textHeight = (elem.fontSize == 1) ? LINE_HEIGHT : (elem.fontSize == 2) ? 18 : 26;
+      yPos += textHeight;
+      linesRendered++;
+    }
+    
+    elementIndex++;
+  }
+  
+  // Draw scrollbar
+  if (totalElements > MAX_LINES) {
+    int scrollbarHeight = max(5, (SCREEN_HEIGHT - 25) * MAX_LINES / totalElements);
+    int maxScroll = totalElements - MAX_LINES;
+    int scrollbarY = 25;
+    if (maxScroll > 0 && scrollY > 0) {
+      scrollbarY = 25 + (scrollY * (SCREEN_HEIGHT - 25 - scrollbarHeight) / maxScroll);
+      if (scrollbarY > SCREEN_HEIGHT - scrollbarHeight - 1) {
+        scrollbarY = SCREEN_HEIGHT - scrollbarHeight - 1;
+      }
+    }
+    tft.fillRect(SCREEN_WIDTH - 5, scrollbarY, 5, scrollbarHeight, TFT_DARKGREY);
+  }
+}
+
+// Variables for PNG rendering
+int pngX = 0;
+int pngY = 30;
+int pngScale = 1;
+
+// Draw PNG callback function
+void pngDraw(PNGDRAW *pDraw) {
+  uint16_t lineBuffer[SCREEN_WIDTH];
+  png.getLineAsRGB565(pDraw, lineBuffer, PNG_RGB565_BIG_ENDIAN, 0xffffffff);
+  
+  // Calculate position with offset
+  int y = pngY + pDraw->y;
+  
+  // Only draw if within screen bounds
+  if (y >= 25 && y < SCREEN_HEIGHT) {
+    tft.pushImage(pngX + pDraw->x, y, pDraw->iWidth, 1, lineBuffer);
+  }
+}
+
+// Download and display image from GitHub
+void fetchAndDisplayImage() {
+  tft.fillScreen(TFT_WHITE);
+  tft.setTextColor(TFT_BLACK, TFT_WHITE);
+  tft.drawCentreString("Loading image...", SCREEN_WIDTH / 2, 100, FONT_SIZE);
+  
+  Serial.println("Fetching image from GitHub...");
+  Serial.println(imageUrl);
+  
+  WiFiClientSecure client;
+  HTTPClient http;
+  
+  // Allow insecure HTTPS connections (for development/testing)
+  client.setInsecure();
+  
+  http.begin(client, imageUrl);
+  http.setTimeout(10000);
+  
+  int httpCode = http.GET();
+  
+  if (httpCode > 0) {
+    Serial.printf("HTTP Response code: %d\n", httpCode);
+    
+    // Get content length
+    int contentLength = http.getSize();
+    Serial.printf("Content length: %d bytes\n", contentLength);
+    
+    if (contentLength > 0) {
+      // Get the stream
+      WiFiClient *stream = http.getStreamPtr();
+      
+      // Clear screen and show header
+      tft.fillScreen(TFT_WHITE);
+      tft.fillRect(0, 0, SCREEN_WIDTH, 25, TFT_DARKGREEN);
+      tft.setTextColor(TFT_WHITE, TFT_DARKGREEN);
+      tft.setTextSize(1);
+      tft.drawString("Image from GitHub", 5, 8, 1);
+      
+      // Try to decode PNG directly from stream
+      // Note: PNGdec needs the full image in memory or a proper file handle
+      // For streaming, we'll download to a buffer first
+      
+      // Allocate buffer for image (limit to reasonable size for ESP32)
+      const int maxImageSize = 50000; // 50KB max
+      uint8_t *imageBuffer = nullptr;
+      
+      if (contentLength > 0 && contentLength < maxImageSize) {
+        imageBuffer = (uint8_t *)malloc(contentLength);
+        if (imageBuffer) {
+          int bytesRead = 0;
+          int totalBytes = 0;
+          
+          // Read image data
+          while (http.connected() && totalBytes < contentLength) {
+            bytesRead = stream->readBytes(imageBuffer + totalBytes, min(1024, contentLength - totalBytes));
+            totalBytes += bytesRead;
+            Serial.printf("Downloaded: %d / %d bytes\n", totalBytes, contentLength);
+          }
+          
+          if (totalBytes == contentLength) {
+            Serial.println("Image downloaded successfully!");
+            
+            // Clear content area
+            tft.fillRect(0, 25, SCREEN_WIDTH, SCREEN_HEIGHT - 25, TFT_WHITE);
+            
+            // Decode and display PNG
+            int16_t pngReturn = png.openRAM(imageBuffer, contentLength, pngDraw);
+            
+            if (pngReturn == PNG_SUCCESS) {
+              Serial.printf("PNG image size: %d x %d\n", png.getWidth(), png.getHeight());
+              
+              // Calculate scaling to fit screen (320x240, but we have 25px header)
+              int imgWidth = png.getWidth();
+              int imgHeight = png.getHeight();
+              int displayWidth = SCREEN_WIDTH;
+              int displayHeight = SCREEN_HEIGHT - 25;
+              
+              // Scale to fit while maintaining aspect ratio
+              float scaleX = (float)displayWidth / imgWidth;
+              float scaleY = (float)displayHeight / imgHeight;
+              float scale = min(scaleX, scaleY);
+              
+              int scaledWidth = imgWidth * scale;
+              int scaledHeight = imgHeight * scale;
+              int offsetX = (SCREEN_WIDTH - scaledWidth) / 2;
+              int offsetY = 25 + (displayHeight - scaledHeight) / 2;
+              
+              // For now, display at original size or scaled
+              // PNGdec doesn't support scaling directly, so we'll display centered
+              // If image is too large, it will be cropped
+              
+              png.decode(NULL, 0);
+              png.close();
+              
+              Serial.println("Image displayed!");
+            } else {
+              Serial.printf("PNG decode error: %d\n", pngReturn);
+              tft.setTextColor(TFT_RED, TFT_WHITE);
+              tft.drawCentreString("PNG decode error", SCREEN_WIDTH / 2, 120, FONT_SIZE);
+            }
+          } else {
+            Serial.println("Download incomplete!");
+            tft.setTextColor(TFT_RED, TFT_WHITE);
+            tft.drawCentreString("Download failed", SCREEN_WIDTH / 2, 120, FONT_SIZE);
+          }
+          
+          free(imageBuffer);
+        } else {
+          Serial.println("Failed to allocate memory for image");
+          tft.setTextColor(TFT_RED, TFT_WHITE);
+          tft.drawCentreString("Memory error", SCREEN_WIDTH / 2, 120, FONT_SIZE);
+        }
+      } else {
+        Serial.printf("Image too large: %d bytes (max: %d)\n", contentLength, maxImageSize);
+        tft.setTextColor(TFT_RED, TFT_WHITE);
+        tft.drawCentreString("Image too large", SCREEN_WIDTH / 2, 120, FONT_SIZE);
+      }
+    } else {
+      Serial.println("Unknown content length");
+      tft.setTextColor(TFT_RED, TFT_WHITE);
+      tft.drawCentreString("Invalid response", SCREEN_WIDTH / 2, 120, FONT_SIZE);
+    }
+  } else {
+    Serial.printf("HTTP Error: %s\n", http.errorToString(httpCode).c_str());
+    tft.fillScreen(TFT_WHITE);
+    tft.setTextColor(TFT_RED, TFT_WHITE);
+    tft.drawCentreString("HTTP Error!", SCREEN_WIDTH / 2, 100, FONT_SIZE);
+    tft.setTextColor(TFT_BLACK, TFT_WHITE);
+    tft.drawCentreString("Code: " + String(httpCode), SCREEN_WIDTH / 2, 130, FONT_SIZE);
+  }
+  
+  http.end();
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  // Start the SPI for the touchscreen and init the touchscreen
+  touchscreenSPI.begin(XPT2046_CLK, XPT2046_MISO, XPT2046_MOSI, XPT2046_CS);
+  touchscreen.begin(touchscreenSPI);
+  // Set the Touchscreen rotation in landscape mode
+  // Note: in some displays, the touchscreen might be upside down, so you might need to set the rotation to 3: touchscreen.setRotation(3);
+  touchscreen.setRotation(1);
+
+  // Start the tft display
+  tft.init();
+  // Set the TFT display rotation in landscape mode
+  tft.setRotation(1);
+
+  // Clear the screen before writing to it
+  tft.fillScreen(TFT_WHITE);
+  tft.setTextColor(TFT_BLACK, TFT_WHITE);
+  
+  // Connect to WiFi
+  connectToWiFi();
+  
+  // If WiFi connected, fetch and display image
+  if (WiFi.status() == WL_CONNECTED) {
+    delay(1000);
+    fetchAndDisplayImage();
+  }
+}
+
+void loop() {
+  // Check WiFi connection status periodically
+  if (WiFi.status() != WL_CONNECTED) {
+    // Try to reconnect every 10 seconds
+    static unsigned long lastReconnectAttempt = 0;
+    if (millis() - lastReconnectAttempt > 10000) {
+      lastReconnectAttempt = millis();
+      connectToWiFi();
+      if (WiFi.status() == WL_CONNECTED) {
+        delay(1000);
+        fetchAndDisplayImage();
+      }
+    }
+  }
+  
+  // Checks if Touchscreen was touched
+  if (touchscreen.tirqTouched() && touchscreen.touched()) {
+    // Get Touchscreen points
+    TS_Point p = touchscreen.getPoint();
+    // Calibrate Touchscreen points with map function to the correct width and height
+    x = map(p.x, 200, 3700, 1, SCREEN_WIDTH);
+    y = map(p.y, 240, 3800, 1, SCREEN_HEIGHT);
+    z = p.z;
+
+    printTouchToSerial(x, y, z);
+    
+    // If WiFi is connected
+    if (WiFi.status() == WL_CONNECTED) {
+      // Check if touch is in scroll area (right side)
+      if (x > SCREEN_WIDTH - 20 && y > 25) {
+        // Scroll down
+        scrollY += 2;
+        if (scrollY > totalElements - MAX_LINES) {
+          scrollY = max(0, totalElements - MAX_LINES);
+        }
+        renderDisplay();
+      } else if (x < 50 && y > 25 && scrollY > 0) {
+        // Scroll up (left side)
+        scrollY -= 2;
+        if (scrollY < 0) scrollY = 0;
+        renderDisplay();
+      } else if (y < 30) {
+        // Touch in header area - reload image
+        fetchAndDisplayImage();
+      } else {
+        // Touch in content area - reload image
+        fetchAndDisplayImage();
+      }
+    } else {
+      printTouchToDisplay(x, y, z);
+    }
+
+    delay(200);
+  }
+  
+  delay(10);
+}

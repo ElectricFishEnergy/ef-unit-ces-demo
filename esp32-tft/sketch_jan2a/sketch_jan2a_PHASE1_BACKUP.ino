@@ -8,6 +8,24 @@
     The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
 */
 
+/*
+ * ===================================================================
+ * BACKUP - FASE 1 COMPLETA
+ * ===================================================================
+ * Este arquivo é um backup do código da Fase 1 do projeto ESP32-TFT.
+ * 
+ * Fase 1 inclui:
+ * - UI responsiva com dimensões dinâmicas (W/H)
+ * - Layout ajustado para rotação 90 graus
+ * - Cores purple mais claras
+ * - Cards NACS e CCS posicionados corretamente
+ * - Touch mapping funcional
+ * - WiFi desabilitado no início (inicia direto na UI)
+ * 
+ * Data do backup: Antes da Fase 2 (funcionalidades da UI)
+ * ===================================================================
+ */
+
 #include <SPI.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
@@ -1157,3 +1175,4 @@ void loop() {
   
   delay(10);
 }
+

@@ -636,16 +636,14 @@ void renderDisplay() {
 
 // Variables for PNG rendering
 int pngX = 0;
-int pngY = 30;
-int pngScale = 1;
+int pngY = 30;  // Start below header
 
-// Draw PNG callback function
+// Draw PNG callback function (no rotation - image is pre-rotated)
 int pngDraw(PNGDRAW *pDraw) {
   uint16_t lineBuffer[SCREEN_WIDTH];
   png.getLineAsRGB565(pDraw, lineBuffer, PNG_RGB565_BIG_ENDIAN, 0xffffffff);
   
   // Calculate position with offset
-  // PNGDRAW structure has: y, iWidth, iHeight, iBpp, pPixels
   int y = pngY + pDraw->y;
   
   // Only draw if within screen bounds
@@ -751,8 +749,8 @@ void fetchAndDisplayImage() {
           if (totalBytes == contentLength) {
             Serial.println("Image downloaded successfully!");
             
-            // Clear content area
-            tft.fillRect(0, 25, SCREEN_WIDTH, SCREEN_HEIGHT - 25, TFT_WHITE);
+            // Clear entire screen
+            tft.fillScreen(TFT_WHITE);
             
             // Decode and display PNG
             int16_t pngReturn = png.openRAM(imageBuffer, contentLength, pngDraw);
@@ -763,9 +761,9 @@ void fetchAndDisplayImage() {
               
               Serial.printf("PNG image size: %d x %d\n", imgWidth, imgHeight);
               
-              // Calculate centering
+              // Calculate centering (image is already rotated)
               int displayWidth = SCREEN_WIDTH;
-              int displayHeight = SCREEN_HEIGHT - 25;
+              int displayHeight = SCREEN_HEIGHT - 25;  // Account for header
               
               // Center the image
               pngX = (SCREEN_WIDTH - imgWidth) / 2;

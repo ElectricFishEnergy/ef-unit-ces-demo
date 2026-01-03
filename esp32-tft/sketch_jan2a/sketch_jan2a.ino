@@ -77,33 +77,6 @@ struct HTMLElement {
 HTMLElement displayElements[100];
 int totalElements = 0;
 
-// PNG decoder callback functions
-void *pngOpen(const char *filename, int32_t *size) {
-  // This is called by PNGdec, but we handle the download separately
-  return nullptr;
-}
-
-void pngClose(void *handle) {
-  // Cleanup if needed
-}
-
-int32_t pngRead(PNGFILE *page, uint8_t *buffer, int32_t length) {
-  // Read from our downloaded data
-  HTTPClient *http = (HTTPClient *)page->fHandle;
-  WiFiClient *stream = http->getStreamPtr();
-  
-  if (stream && stream->available()) {
-    return stream->readBytes(buffer, length);
-  }
-  return 0;
-}
-
-int32_t pngSeek(PNGFILE *page, int32_t position) {
-  // For HTTP streams, seeking is not typically supported
-  // We'll need to handle this differently
-  return 0;
-}
-
 // Print Touchscreen info about X, Y and Pressure (Z) on the Serial Monitor
 void printTouchToSerial(int touchX, int touchY, int touchZ) {
   Serial.print("X = ");
@@ -746,36 +719,40 @@ void fetchAndDisplayImage() {
             int16_t pngReturn = png.openRAM(imageBuffer, contentLength, pngDraw);
             
             if (pngReturn == PNG_SUCCESS) {
-              Serial.printf("PNG image size: %d x %d\n", png.getWidth(), png.getHeight());
-              
-              // Calculate scaling to fit screen (320x240, but we have 25px header)
               int imgWidth = png.getWidth();
               int imgHeight = png.getHeight();
+              
+              Serial.printf("PNG image size: %d x %d\n", imgWidth, imgHeight);
+              
+              // Calculate centering
               int displayWidth = SCREEN_WIDTH;
               int displayHeight = SCREEN_HEIGHT - 25;
               
-              // Scale to fit while maintaining aspect ratio
-              float scaleX = (float)displayWidth / imgWidth;
-              float scaleY = (float)displayHeight / imgHeight;
-              float scale = min(scaleX, scaleY);
+              // Center the image
+              pngX = (SCREEN_WIDTH - imgWidth) / 2;
+              if (pngX < 0) pngX = 0;
               
-              int scaledWidth = imgWidth * scale;
-              int scaledHeight = imgHeight * scale;
-              int offsetX = (SCREEN_WIDTH - scaledWidth) / 2;
-              int offsetY = 25 + (displayHeight - scaledHeight) / 2;
+              pngY = 25 + (displayHeight - imgHeight) / 2;
+              if (pngY < 25) pngY = 25;
               
-              // For now, display at original size or scaled
-              // PNGdec doesn't support scaling directly, so we'll display centered
-              // If image is too large, it will be cropped
+              Serial.printf("Displaying at: x=%d, y=%d\n", pngX, pngY);
               
-              png.decode(NULL, 0);
+              // Decode and render
+              int decodeResult = png.decode(NULL, 0);
+              
+              if (decodeResult == PNG_SUCCESS) {
+                Serial.println("Image displayed successfully!");
+              } else {
+                Serial.printf("PNG decode error: %d\n", decodeResult);
+                tft.setTextColor(TFT_RED, TFT_WHITE);
+                tft.drawCentreString("Decode error: " + String(decodeResult), SCREEN_WIDTH / 2, 120, 1);
+              }
+              
               png.close();
-              
-              Serial.println("Image displayed!");
             } else {
-              Serial.printf("PNG decode error: %d\n", pngReturn);
+              Serial.printf("PNG open error: %d\n", pngReturn);
               tft.setTextColor(TFT_RED, TFT_WHITE);
-              tft.drawCentreString("PNG decode error", SCREEN_WIDTH / 2, 120, FONT_SIZE);
+              tft.drawCentreString("PNG open error", SCREEN_WIDTH / 2, 120, FONT_SIZE);
             }
           } else {
             Serial.println("Download incomplete!");

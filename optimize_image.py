@@ -98,7 +98,7 @@ def optimize_image(input_path, output_path, max_width=320, max_height=240, quali
         return False
 
 if __name__ == "__main__":
-    # Caminhos
+    # Caminhos - usar imagem original para melhor qualidade
     input_file = "base_template.png"
     output_file = "base_template_small.png"
     
@@ -108,8 +108,10 @@ if __name__ == "__main__":
         print("Certifique-se de executar o script no diretório correto.")
         sys.exit(1)
     
-    # Otimizar imagem com alta qualidade
-    success = optimize_image(input_file, output_file, quality='high')
+    # Otimizar imagem com alta qualidade e resolução maior
+    # Usar resolução maior para melhor qualidade (ainda cabe na memória do ESP32)
+    # A imagem será esticada para 320x240 na tela, então podemos usar resolução maior
+    success = optimize_image(input_file, output_file, max_width=320, max_height=560, quality='high')
     
     if success:
         print("\n" + "="*50)

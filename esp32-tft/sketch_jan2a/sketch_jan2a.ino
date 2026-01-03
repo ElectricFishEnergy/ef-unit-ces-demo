@@ -47,9 +47,12 @@ XPT2046_Touchscreen touchscreen(XPT2046_CS, XPT2046_IRQ);
 const char* ssid = "zoinnelin";
 const char* password = "M@ya2023!";
 
-// GitHub image URL - Update with your repository details
-// Format: https://raw.githubusercontent.com/USERNAME/REPO/BRANCH/path/to/image.png
-const char* imageUrl = "https://raw.githubusercontent.com/neliojunior/ef-unit-ces-demo/main/base_template.png";
+// GitHub image URL
+// Using optimized version (320x240, ~49KB) for ESP32 compatibility
+const char* imageUrl = "https://raw.githubusercontent.com/ElectricFishEnergy/ef-unit-ces-demo/refs/heads/main/base_template_small.png";
+
+// Original large version (525x925, ~217KB) - too large for ESP32
+// const char* imageUrl = "https://raw.githubusercontent.com/ElectricFishEnergy/ef-unit-ces-demo/refs/heads/main/base_template.png";
 
 // Touchscreen coordinates: (x, y) and pressure (z)
 int x, y, z;
@@ -637,17 +640,31 @@ int pngY = 30;
 int pngScale = 1;
 
 // Draw PNG callback function
-void pngDraw(PNGDRAW *pDraw) {
+int pngDraw(PNGDRAW *pDraw) {
   uint16_t lineBuffer[SCREEN_WIDTH];
   png.getLineAsRGB565(pDraw, lineBuffer, PNG_RGB565_BIG_ENDIAN, 0xffffffff);
   
   // Calculate position with offset
+  // PNGDRAW structure has: y, iWidth, iHeight, iBpp, pPixels
   int y = pngY + pDraw->y;
   
   // Only draw if within screen bounds
-  if (y >= 25 && y < SCREEN_HEIGHT) {
-    tft.pushImage(pngX + pDraw->x, y, pDraw->iWidth, 1, lineBuffer);
+  if (y >= 25 && y < SCREEN_HEIGHT && pDraw->iWidth > 0) {
+    // Calculate x position (centered)
+    int x = pngX;
+    int width = pDraw->iWidth;
+    
+    // Clip if image is wider than screen
+    if (x + width > SCREEN_WIDTH) {
+      width = SCREEN_WIDTH - x;
+    }
+    
+    if (width > 0 && x >= 0) {
+      tft.pushImage(x, y, width, 1, lineBuffer);
+    }
   }
+  
+  return 1; // Return 1 to continue decoding
 }
 
 // Download and display image from GitHub
@@ -692,13 +709,35 @@ void fetchAndDisplayImage() {
       // Note: PNGdec needs the full image in memory or a proper file handle
       // For streaming, we'll download to a buffer first
       
-      // Allocate buffer for image (limit to reasonable size for ESP32)
-      const int maxImageSize = 50000; // 50KB max
+      // Check available free heap memory
+      size_t freeHeap = ESP.getFreeHeap();
+      size_t maxAlloc = ESP.getMaxAllocHeap();
+      Serial.printf("Free heap before allocation: %d bytes (%.2f KB)\n", freeHeap, freeHeap / 1024.0);
+      Serial.printf("Largest allocatable block: %d bytes (%.2f KB)\n", maxAlloc, maxAlloc / 1024.0);
+      
+      // Use a more conservative approach - limit to available memory minus safety margin
+      // Leave at least 30KB free for system operations (reduced from 50KB)
+      const int safetyMargin = 30000;
+      int maxImageSize = maxAlloc - safetyMargin;
+      if (maxImageSize < 30000) maxImageSize = 30000; // Minimum 30KB
+      
+      Serial.printf("Max image size: %d bytes (%.2f KB)\n", maxImageSize, maxImageSize / 1024.0);
+      Serial.printf("Image size: %d bytes (%.2f KB)\n", contentLength, contentLength / 1024.0);
+      
       uint8_t *imageBuffer = nullptr;
       
       if (contentLength > 0 && contentLength < maxImageSize) {
-        imageBuffer = (uint8_t *)malloc(contentLength);
+        Serial.println("Attempting to allocate memory...");
+        imageBuffer = (uint8_t *)heap_caps_malloc(contentLength, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        
+        // If SPIRAM allocation failed, try regular heap
+        if (!imageBuffer) {
+          Serial.println("SPIRAM allocation failed, trying regular heap...");
+          imageBuffer = (uint8_t *)malloc(contentLength);
+        }
+        
         if (imageBuffer) {
+          Serial.printf("Memory allocated successfully: %d bytes\n", contentLength);
           int bytesRead = 0;
           int totalBytes = 0;
           
@@ -763,13 +802,37 @@ void fetchAndDisplayImage() {
           free(imageBuffer);
         } else {
           Serial.println("Failed to allocate memory for image");
+          Serial.printf("Free heap: %d bytes\n", ESP.getFreeHeap());
+          Serial.printf("Largest free block: %d bytes\n", ESP.getMaxAllocHeap());
+          tft.fillScreen(TFT_WHITE);
           tft.setTextColor(TFT_RED, TFT_WHITE);
-          tft.drawCentreString("Memory error", SCREEN_WIDTH / 2, 120, FONT_SIZE);
+          tft.drawCentreString("Memory error!", SCREEN_WIDTH / 2, 100, FONT_SIZE);
+          tft.setTextColor(TFT_BLACK, TFT_WHITE);
+          String freeMsg = "Free: " + String(ESP.getFreeHeap() / 1024) + " KB";
+          tft.drawCentreString(freeMsg, SCREEN_WIDTH / 2, 120, 1);
+          String needMsg = "Need: " + String(contentLength / 1024) + " KB";
+          tft.drawCentreString(needMsg, SCREEN_WIDTH / 2, 140, 1);
         }
       } else {
         Serial.printf("Image too large: %d bytes (max: %d)\n", contentLength, maxImageSize);
+        Serial.printf("Image size: %.2f KB\n", contentLength / 1024.0);
+        Serial.println("SOLUTION: Please optimize the image:");
+        Serial.println("1. Reduce image dimensions (max 320x240 recommended)");
+        Serial.println("2. Compress PNG more (use tools like TinyPNG)");
+        Serial.println("3. Convert to JPEG format (smaller file size)");
+        Serial.println("4. Or create a smaller version for ESP32");
+        
+        tft.fillScreen(TFT_WHITE);
         tft.setTextColor(TFT_RED, TFT_WHITE);
-        tft.drawCentreString("Image too large", SCREEN_WIDTH / 2, 120, FONT_SIZE);
+        tft.drawCentreString("Image too large!", SCREEN_WIDTH / 2, 80, FONT_SIZE);
+        tft.setTextColor(TFT_BLACK, TFT_WHITE);
+        String sizeMsg = String(contentLength / 1024) + " KB";
+        tft.drawCentreString(sizeMsg, SCREEN_WIDTH / 2, 110, 1);
+        String maxMsg = "Max: " + String(maxImageSize / 1024) + " KB";
+        tft.drawCentreString(maxMsg, SCREEN_WIDTH / 2, 130, 1);
+        tft.drawCentreString("Optimize image", SCREEN_WIDTH / 2, 160, 1);
+        tft.drawCentreString("or use smaller", SCREEN_WIDTH / 2, 180, 1);
+        tft.drawCentreString("version", SCREEN_WIDTH / 2, 200, 1);
       }
     } else {
       Serial.println("Unknown content length");

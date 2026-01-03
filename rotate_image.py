@@ -69,8 +69,8 @@ if __name__ == "__main__":
         print("Certifique-se de executar o script no diretório correto.")
         sys.exit(1)
     
-    # Rotacionar imagem
-    success = rotate_image(input_file, output_file, 90)
+    # Rotacionar imagem 180 graus
+    success = rotate_image(input_file, output_file, 180)
     
     if success:
         print("\n" + "="*50)

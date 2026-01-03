@@ -636,29 +636,59 @@ void renderDisplay() {
 
 // Variables for PNG rendering
 int pngX = 0;
-int pngY = 30;  // Start below header
+int pngY = 0;  // Start from top (no header)
+int pngOriginalWidth = 0;
+int pngOriginalHeight = 0;
+float pngScaleX = 1.0;
+float pngScaleY = 1.0;
 
-// Draw PNG callback function (no rotation - image is pre-rotated)
+// Draw PNG callback function with scaling (stretch to fit screen)
 int pngDraw(PNGDRAW *pDraw) {
   uint16_t lineBuffer[SCREEN_WIDTH];
   png.getLineAsRGB565(pDraw, lineBuffer, PNG_RGB565_BIG_ENDIAN, 0xffffffff);
   
-  // Calculate position with offset
-  int y = pngY + pDraw->y;
+  // Get original line position and width
+  int originalY = pDraw->y;
+  int originalWidth = pDraw->iWidth;
   
-  // Only draw if within screen bounds
-  if (y >= 25 && y < SCREEN_HEIGHT && pDraw->iWidth > 0) {
-    // Calculate x position (centered)
-    int x = pngX;
-    int width = pDraw->iWidth;
+  // Calculate scaled Y position for this line
+  float scaledYStart = originalY * pngScaleY;
+  float scaledYEnd = (originalY + 1) * pngScaleY;
+  int startY = (int)scaledYStart;
+  int endY = (int)scaledYEnd;
+  int lineHeight = endY - startY;
+  
+  if (lineHeight < 1) lineHeight = 1;
+  
+  // Draw each pixel of the line, scaled horizontally
+  for (int srcX = 0; srcX < originalWidth; srcX++) {
+    // Calculate scaled X position
+    float scaledXStart = srcX * pngScaleX;
+    float scaledXEnd = (srcX + 1) * pngScaleX;
+    int startX = (int)scaledXStart;
+    int endX = (int)scaledXEnd;
+    int pixelWidth = endX - startX;
     
-    // Clip if image is wider than screen
-    if (x + width > SCREEN_WIDTH) {
-      width = SCREEN_WIDTH - x;
-    }
+    if (pixelWidth < 1) pixelWidth = 1;
     
-    if (width > 0 && x >= 0) {
-      tft.pushImage(x, y, width, 1, lineBuffer);
+    // Calculate screen position
+    int screenX = pngX + startX;
+    int screenY = pngY + startY;
+    
+    // Get pixel color
+    uint16_t pixelColor = lineBuffer[srcX];
+    
+    // Draw scaled pixel (as a rectangle to fill the scaled area)
+    if (screenX >= 0 && screenX < SCREEN_WIDTH && 
+        screenY >= 0 && screenY < SCREEN_HEIGHT) {
+      // Clip to screen bounds
+      int drawWidth = min(pixelWidth, SCREEN_WIDTH - screenX);
+      int drawHeight = min(lineHeight, SCREEN_HEIGHT - screenY);
+      
+      if (drawWidth > 0 && drawHeight > 0) {
+        // Use fillRect for better quality (avoids gaps)
+        tft.fillRect(screenX, screenY, drawWidth, drawHeight, pixelColor);
+      }
     }
   }
   
@@ -696,12 +726,8 @@ void fetchAndDisplayImage() {
       // Get the stream
       WiFiClient *stream = http.getStreamPtr();
       
-      // Clear screen and show header
+      // Clear entire screen (no header)
       tft.fillScreen(TFT_WHITE);
-      tft.fillRect(0, 0, SCREEN_WIDTH, 25, TFT_DARKGREEN);
-      tft.setTextColor(TFT_WHITE, TFT_DARKGREEN);
-      tft.setTextSize(1);
-      tft.drawString("Image from GitHub", 5, 8, 1);
       
       // Try to decode PNG directly from stream
       // Note: PNGdec needs the full image in memory or a proper file handle
@@ -756,23 +782,29 @@ void fetchAndDisplayImage() {
             int16_t pngReturn = png.openRAM(imageBuffer, contentLength, pngDraw);
             
             if (pngReturn == PNG_SUCCESS) {
-              int imgWidth = png.getWidth();
-              int imgHeight = png.getHeight();
+              pngOriginalWidth = png.getWidth();
+              pngOriginalHeight = png.getHeight();
               
-              Serial.printf("PNG image size: %d x %d\n", imgWidth, imgHeight);
+              Serial.printf("PNG image size: %d x %d\n", pngOriginalWidth, pngOriginalHeight);
               
-              // Calculate centering (image is already rotated)
+              // Calculate display area (full screen - no header)
               int displayWidth = SCREEN_WIDTH;
-              int displayHeight = SCREEN_HEIGHT - 25;  // Account for header
+              int displayHeight = SCREEN_HEIGHT;  // Full screen height
               
-              // Center the image
-              pngX = (SCREEN_WIDTH - imgWidth) / 2;
-              if (pngX < 0) pngX = 0;
+              // Calculate scale to stretch to fit screen (stretch both dimensions)
+              pngScaleX = (float)displayWidth / pngOriginalWidth;
+              pngScaleY = (float)displayHeight / pngOriginalHeight;
               
-              pngY = 25 + (displayHeight - imgHeight) / 2;
-              if (pngY < 25) pngY = 25;
+              Serial.printf("Scale X: %.3f, Scale Y: %.3f\n", pngScaleX, pngScaleY);
+              Serial.printf("Scaled size: %d x %d\n", 
+                            (int)(pngOriginalWidth * pngScaleX), 
+                            (int)(pngOriginalHeight * pngScaleY));
               
-              Serial.printf("Displaying at: x=%d, y=%d\n", pngX, pngY);
+              // Image starts at top-left (fills entire screen)
+              pngX = 0;
+              pngY = 0;  // Start from top
+              
+              Serial.printf("Displaying stretched at: x=%d, y=%d\n", pngX, pngY);
               
               // Decode and render
               int decodeResult = png.decode(NULL, 0);
